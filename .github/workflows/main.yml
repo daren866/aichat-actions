@@ -1,0 +1,82 @@
+name: aichat
+
+on:
+  workflow_dispatch:
+    inputs:
+      speak:
+        description: "提交给模型的指令/问题"
+        required: true
+        type: string
+
+jobs:
+  aichat:
+    runs-on: ubuntu-latest
+
+    env:
+      # 自定义模型存储目录，便于在 Actions 中缓存（默认 Linux 是 /usr/share/ollama/.ollama/models）
+      OLLAMA_MODELS: /home/runner/ollama_models
+
+    steps:
+      # 如果不放心 curl，可以先确保安装（ubuntu-latest 通常已有）
+      - name: Ensure curl
+        run: |
+          if ! command -v curl >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y curl
+          fi
+
+      # ---------- 1) 缓存 Ollama 主程序 ----------
+      - name: Cache Ollama binary
+        id: cache-ollama-binary
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/ollama
+          key: ollama-binary-ubuntu-latest
+
+      # ---------- 2) 缓存 Ollama 模型 ----------
+      - name: Cache Ollama models
+        id: cache-ollama-models
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OLLAMA_MODELS }}
+          key: ollama-models-qwen3-0.6b
+
+      # ---------- 3) 安装 Ollama（如果没有缓存） ----------
+      - name: Install Ollama (if not cached)
+        if: steps.cache-ollama-binary.outputs.cache-hit != 'true'
+        run: |
+          # 执行官方安装脚本
+          curl -fsSL https://ollama.com/install.sh | sh
+          echo "下载并缓存ollama成功"
+
+      # 确保当前 shell 能找到 ollama（新安装的二进制在 /usr/local/bin，通常已在 PATH）
+      - name: Add ollama to PATH
+        run: |
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
+      # ---------- 4) 拉取模型（如果没有缓存） ----------
+      - name: Pull qwen3:0.6b (if models not cached)
+        if: steps.cache-ollama-models.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${OLLAMA_MODELS}"
+          # 拉取模型到自定义目录
+          ollama pull qwen3:0.6b
+          echo "下载并缓存模型"
+
+      # ---------- 5) 启动 Ollama 服务 ----------
+      - name: Start Ollama server in background
+        run: |
+          # 后台启动服务
+          ollama serve &
+          sleep 6
+          echo "在后台开启服务器"
+
+      # ---------- 6) 使用用户提交的 speak 调用模型 ----------
+      - name: Run model with user speak
+        run: |
+          ollama run qwen3:0.6b "${{ github.event.inputs.speak }}"
+
+      # ---------- 7) 结束 ----------
+      - name: Finish
+        run: |
+          echo "ai回复完成之后停止运行"
