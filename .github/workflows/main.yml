@@ -25,7 +25,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ollama
-          key: ollama-binary-ubuntu-latest-v3
+          key: ollama-binary-ubuntu-latest-v4
 
       - name: Install Ollama (if not cached)
         if: steps.cache-ollama-binary.outputs.cache-hit != 'true'
@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.GGUF_DIR }}/${{ env.GGUF_FILE }}
-          key: qwen35-08b-bf16-gguf-v1
+          key: qwen35-08b-bf16-gguf-v2
 
       # ---------- 3) 下载 GGUF（未命中缓存时）----------
       - name: Download BF16 GGUF from HuggingFace
@@ -70,7 +70,21 @@ jobs:
           EOF
           cat "$GGUF_DIR/Modelfile"
 
-      # ---------- 5) 启动 Ollama 服务 ----------
+      # ---------- 5) 安装 llama-quantize 工具 (解决报错的核心步骤) ----------
+      - name: Install llama-quantize binary
+        run: |
+          echo "Downloading llama.cpp pre-built binary to extract llama-quantize..."
+          # 下载 llama.cpp 的 ubuntu 预编译包，如果链接因版本更新失效，可去 releases 页面找最新链接
+          curl -fsSL https://github.com/ggerganov/llama.cpp/releases/download/b3600/llama-b3600-bin-ubuntu-x64.zip -o llama.zip
+          sudo apt-get update && sudo apt-get install -y unzip
+          # 解压出 llama-quantize 放到系统环境变量中
+          unzip -j llama.zip "*llama-quantize*" -d /usr/local/bin/
+          chmod +x /usr/local/bin/llama-quantize
+          echo "llama-quantize installed successfully"
+          # 清理下载的压缩包
+          rm -f llama.zip
+
+      # ---------- 6) 启动 Ollama 服务 ----------
       - name: Start Ollama server in background
         run: |
           ollama serve > ollama.log 2>&1 &
@@ -84,18 +98,19 @@ jobs:
           done
           curl -sf http://localhost:11434/api/version || { echo "server failed to start"; cat ollama.log; exit 1; }
 
-      # ---------- 6) 注册自定义模型 ----------
+      # ---------- 7) 注册自定义模型 (带 --quantize bf16 双保险) ----------
       - name: Create custom model from GGUF
         run: |
           cd "$GGUF_DIR"
-          ollama create "$MODEL_NAME" -f Modelfile
+          # 使用 --quantize bf16 明确指定格式跳过校验，如果失败则尝试普通创建（依赖刚装好的 llama-quantize）
+          ollama create "$MODEL_NAME" -f Modelfile --quantize bf16 || ollama create "$MODEL_NAME" -f Modelfile
           ollama list
 
-      # ---------- 7) 调用模型 ----------
+      # ---------- 8) 调用模型 ----------
       - name: Run model with user speak
         run: |
           ollama run "$MODEL_NAME" "${{ github.event.inputs.speak }}"
 
-      # ---------- 8) 结束 ----------
+      # ---------- 9) 结束 ----------
       - name: Finish
         run: echo "ai回复完成之后停止运行"
