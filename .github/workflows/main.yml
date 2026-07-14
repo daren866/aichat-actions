@@ -74,14 +74,12 @@ jobs:
       - name: Install llama-quantize binary
         run: |
           echo "Downloading llama.cpp pre-built binary to extract llama-quantize..."
-          # 下载 llama.cpp 的 ubuntu 预编译包，如果链接因版本更新失效，可去 releases 页面找最新链接
           curl -fsSL https://github.com/ggerganov/llama.cpp/releases/download/b3600/llama-b3600-bin-ubuntu-x64.zip -o llama.zip
           sudo apt-get update && sudo apt-get install -y unzip
-          # 解压出 llama-quantize 放到系统环境变量中
-          unzip -j llama.zip "*llama-quantize*" -d /usr/local/bin/
-          chmod +x /usr/local/bin/llama-quantize
+          # 关键修复：给 unzip 加上 sudo 权限，避免 Permission denied
+          sudo unzip -j llama.zip "*llama-quantize*" -d /usr/local/bin/
+          sudo chmod +x /usr/local/bin/llama-quantize
           echo "llama-quantize installed successfully"
-          # 清理下载的压缩包
           rm -f llama.zip
 
       # ---------- 6) 启动 Ollama 服务 ----------
