@@ -15,17 +15,17 @@ jobs:
     env:
       OLLAMA_MODELS: /home/runner/ollama_models
       GGUF_DIR: /home/runner/gguf
-      GGUF_FILE: Qwen3.5-0.8B-Q8_0.gguf   # 改为 Q8_0 高精度量化版
+      GGUF_FILE: Qwen3.5-0.8B-Q8_0.gguf
       MODEL_NAME: qwen35-q8
 
     steps:
-      # ---------- 1) 缓存 Ollama 主程序 ----------
+      # ---------- 1) 缓存 Ollama 主程序 (升级 key 为 v5 强制更新最新版) ----------
       - name: Cache Ollama binary
         id: cache-ollama-binary
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ollama
-          key: ollama-binary-ubuntu-latest-v4
+          key: ollama-binary-ubuntu-latest-v5
 
       - name: Install Ollama (if not cached)
         if: steps.cache-ollama-binary.outputs.cache-hit != 'true'
@@ -36,7 +36,7 @@ jobs:
       - name: Add ollama to PATH
         run: echo "/usr/local/bin" >> "$GITHUB_PATH"
 
-      # ---------- 2) 缓存 Q8_0 GGUF 文件（固定 key，命中即跳过下载）----------
+      # ---------- 2) 缓存 Q8_0 GGUF 文件 ----------
       - name: Cache GGUF model file
         id: cache-gguf
         uses: actions/cache@v4
@@ -44,16 +44,14 @@ jobs:
           path: ${{ env.GGUF_DIR }}/${{ env.GGUF_FILE }}
           key: qwen35-08b-q8-gguf-v1
 
-      # ---------- 3) 下载 GGUF（未命中缓存时）----------
+      # ---------- 3) 下载 GGUF ----------
       - name: Download Q8_0 GGUF from HuggingFace
         if: steps.cache-gguf.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$GGUF_DIR"
-          # 下载 Q8_0 版本，8位量化是高精度且原生兼容，无报错风险
           curl -fL --retry 5 --retry-delay 5 -C - \
             -o "$GGUF_DIR/$GGUF_FILE" \
             "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf?download=true"
-          # 校验文件大于 1MB，防止拿到错误页
           SIZE=$(stat -c%s "$GGUF_DIR/$GGUF_FILE")
           if [ "$SIZE" -lt 1048576 ]; then
             echo "Downloaded file too small ($SIZE bytes), aborting"
@@ -61,7 +59,7 @@ jobs:
           fi
           echo "GGUF downloaded: $SIZE bytes"
 
-      # ---------- 4) 写入 Modelfile（绝对路径，避免找不到文件）----------
+      # ---------- 4) 写入 Modelfile ----------
       - name: Write Modelfile
         run: |
           mkdir -p "$GGUF_DIR"
@@ -70,11 +68,22 @@ jobs:
           EOF
           cat "$GGUF_DIR/Modelfile"
 
-      # ---------- 5) 启动 Ollama 服务 ----------
+      # ---------- 5) 安装 llama-quantize 兜底 (解决旧版 Ollama 兼容性问题) ----------
+      - name: Install llama-quantize binary
+        run: |
+          echo "Downloading llama.cpp pre-built binary to extract llama-quantize..."
+          # 使用最新版的 llama.cpp release 链接，如果失效请去 github.com/ggerganov/llama.cpp/releases 替换
+          curl -fsSL https://github.com/ggerganov/llama.cpp/releases/download/b3600/llama-b3600-bin-ubuntu-x64.zip -o llama.zip
+          sudo apt-get update && sudo apt-get install -y unzip
+          sudo unzip -j llama.zip "*llama-quantize*" -d /usr/local/bin/
+          sudo chmod +x /usr/local/bin/llama-quantize
+          echo "llama-quantize installed successfully"
+          rm -f llama.zip
+
+      # ---------- 6) 启动 Ollama 服务 ----------
       - name: Start Ollama server in background
         run: |
           ollama serve > ollama.log 2>&1 &
-          # 轮询等待端口就绪，避免固定 sleep 不够
           for i in $(seq 1 20); do
             if curl -sf http://localhost:11434/api/version >/dev/null 2>&1; then
               echo "Ollama server is up"
@@ -84,19 +93,19 @@ jobs:
           done
           curl -sf http://localhost:11434/api/version || { echo "server failed to start"; cat ollama.log; exit 1; }
 
-      # ---------- 6) 注册自定义模型 ----------
+      # ---------- 7) 注册自定义模型 ----------
       - name: Create custom model from GGUF
         run: |
           cd "$GGUF_DIR"
-          # Q8_0 格式原生兼容，直接 create 即可
+          # 如果最新版 Ollama 仍要求校验，刚才安装的 llama-quantize 会处理它
           ollama create "$MODEL_NAME" -f Modelfile
           ollama list
 
-      # ---------- 7) 调用模型 ----------
+      # ---------- 8) 调用模型 ----------
       - name: Run model with user speak
         run: |
           ollama run "$MODEL_NAME" "${{ github.event.inputs.speak }}"
 
-      # ---------- 8) 结束 ----------
+      # ---------- 9) 结束 ----------
       - name: Finish
         run: echo "ai回复完成之后停止运行"
