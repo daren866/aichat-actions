@@ -14,62 +14,88 @@ jobs:
 
     env:
       OLLAMA_MODELS: /home/runner/ollama_models
+      GGUF_DIR: /home/runner/gguf
+      GGUF_FILE: Qwen3.5-0.8B-BF16.gguf
+      MODEL_NAME: qwen35-bf16
 
     steps:
-      # ---------- 1) 缓存 Ollama 主程序 (固定 key 实现真跳过) ----------
+      # ---------- 1) 缓存 Ollama 主程序 ----------
       - name: Cache Ollama binary
         id: cache-ollama-binary
         uses: actions/cache@v4
         with:
           path: /usr/local/bin/ollama
-          key: ollama-binary-ubuntu-latest-v2
+          key: ollama-binary-ubuntu-latest-v3
 
       - name: Install Ollama (if not cached)
         if: steps.cache-ollama-binary.outputs.cache-hit != 'true'
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
-          echo "下载并缓存ollama成功"
+          echo "Ollama installed and cached"
 
       - name: Add ollama to PATH
         run: echo "/usr/local/bin" >> "$GITHUB_PATH"
 
-      # ---------- 2) 缓存 Ollama 模型 (防死锁机制) ----------
-      - name: Cache Ollama models
-        id: cache-ollama-models
+      # ---------- 2) 缓存 BF16 GGUF 文件（固定 key，命中即跳过下载）----------
+      - name: Cache GGUF model file
+        id: cache-gguf
         uses: actions/cache@v4
         with:
-          path: ${{ env.OLLAMA_MODELS }}
-          key: ollama-models-qwen3-0.6b-${{ github.run_id }}
-          restore-keys: ollama-models-qwen3-0.6b-
+          path: ${{ env.GGUF_DIR }}/${{ env.GGUF_FILE }}
+          key: qwen35-08b-bf16-gguf-v1
 
-      # ---------- 3) 启动服务 ----------
+      # ---------- 3) 下载 GGUF（未命中缓存时）----------
+      - name: Download BF16 GGUF from HuggingFace
+        if: steps.cache-gguf.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$GGUF_DIR"
+          # -L 跟随 302 跳转到 CDN，-f 失败即退出，--retry 带断点续传
+          curl -fL --retry 5 --retry-delay 5 -C - \
+            -o "$GGUF_DIR/$GGUF_FILE" \
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-BF16.gguf?download=true"
+          # 校验文件大于 1MB，防止拿到错误页
+          SIZE=$(stat -c%s "$GGUF_DIR/$GGUF_FILE")
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "Downloaded file too small ($SIZE bytes), aborting"
+            exit 1
+          fi
+          echo "GGUF downloaded: $SIZE bytes"
+
+      # ---------- 4) 写入 Modelfile（绝对路径，避免找不到文件）----------
+      - name: Write Modelfile
+        run: |
+          mkdir -p "$GGUF_DIR"
+          cat > "$GGUF_DIR/Modelfile" <<'EOF'
+          FROM /home/runner/gguf/Qwen3.5-0.8B-BF16.gguf
+          EOF
+          cat "$GGUF_DIR/Modelfile"
+
+      # ---------- 5) 启动 Ollama 服务 ----------
       - name: Start Ollama server in background
         run: |
-          ollama serve &
-          sleep 6
-          echo "在后台开启服务器"
+          ollama serve > ollama.log 2>&1 &
+          # 轮询等待端口就绪，避免固定 sleep 不够
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:11434/api/version >/dev/null 2>&1; then
+              echo "Ollama server is up"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:11434/api/version || { echo "server failed to start"; cat ollama.log; exit 1; }
 
-      # ---------- 4) 智能检测并拉取模型 ----------
-      - name: Validate and pull qwen3:0.6b
+      # ---------- 6) 注册自定义模型 ----------
+      - name: Create custom model from GGUF
         run: |
-          MODEL_DIR="${OLLAMA_MODELS}/manifests/registry.ollama.ai/library/qwen3"
-          BLOB_DIR="${OLLAMA_MODELS}/blobs"
-          
-          # 检查是否真的有模型文件（大于1MB）
-          if [ -d "$MODEL_DIR" ] && [ "$(find "$BLOB_DIR" -type f -size +1M | wc -l)" -gt 0 ]; then
-            echo "命中有效模型缓存，跳过下载"
-          else
-            echo "未命中有效模型缓存，清空并重新下载"
-            rm -rf "${OLLAMA_MODELS:?}"/*
-            ollama pull qwen3:0.6b
-            echo "下载并缓存模型"
-          fi
+          cd "$GGUF_DIR"
+          ollama create "$MODEL_NAME" -f Modelfile
+          ollama list
 
-      # ---------- 5) 调用模型 ----------
+      # ---------- 7) 调用模型 ----------
       - name: Run model with user speak
         run: |
-          ollama run qwen3:0.6b "${{ github.event.inputs.speak }}"
+          ollama run "$MODEL_NAME" "${{ github.event.inputs.speak }}"
 
-      # ---------- 6) 结束 ----------
+      # ---------- 8) 结束 ----------
       - name: Finish
         run: echo "ai回复完成之后停止运行"
