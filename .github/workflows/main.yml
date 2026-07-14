@@ -15,8 +15,8 @@ jobs:
     env:
       OLLAMA_MODELS: /home/runner/ollama_models
       GGUF_DIR: /home/runner/gguf
-      GGUF_FILE: Qwen3.5-0.8B-F16.gguf   # 改为 F16 格式
-      MODEL_NAME: qwen35-f16
+      GGUF_FILE: Qwen3.5-0.8B-Q8_0.gguf   # 改为 Q8_0 高精度量化版
+      MODEL_NAME: qwen35-q8
 
     steps:
       # ---------- 1) 缓存 Ollama 主程序 ----------
@@ -36,23 +36,23 @@ jobs:
       - name: Add ollama to PATH
         run: echo "/usr/local/bin" >> "$GITHUB_PATH"
 
-      # ---------- 2) 缓存 F16 GGUF 文件（固定 key，命中即跳过下载）----------
+      # ---------- 2) 缓存 Q8_0 GGUF 文件（固定 key，命中即跳过下载）----------
       - name: Cache GGUF model file
         id: cache-gguf
         uses: actions/cache@v4
         with:
           path: ${{ env.GGUF_DIR }}/${{ env.GGUF_FILE }}
-          key: qwen35-08b-f16-gguf-v1
+          key: qwen35-08b-q8-gguf-v1
 
       # ---------- 3) 下载 GGUF（未命中缓存时）----------
-      - name: Download F16 GGUF from HuggingFace
+      - name: Download Q8_0 GGUF from HuggingFace
         if: steps.cache-gguf.outputs.cache-hit != 'true'
         run: |
           mkdir -p "$GGUF_DIR"
-          # 下载 F16 版本，这是 GGUF 原生支持的高精度格式，无需额外校验
+          # 下载 Q8_0 版本，8位量化是高精度且原生兼容，无报错风险
           curl -fL --retry 5 --retry-delay 5 -C - \
             -o "$GGUF_DIR/$GGUF_FILE" \
-            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-F16.gguf?download=true"
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf?download=true"
           # 校验文件大于 1MB，防止拿到错误页
           SIZE=$(stat -c%s "$GGUF_DIR/$GGUF_FILE")
           if [ "$SIZE" -lt 1048576 ]; then
@@ -66,7 +66,7 @@ jobs:
         run: |
           mkdir -p "$GGUF_DIR"
           cat > "$GGUF_DIR/Modelfile" <<'EOF'
-          FROM /home/runner/gguf/Qwen3.5-0.8B-F16.gguf
+          FROM /home/runner/gguf/Qwen3.5-0.8B-Q8_0.gguf
           EOF
           cat "$GGUF_DIR/Modelfile"
 
@@ -88,7 +88,7 @@ jobs:
       - name: Create custom model from GGUF
         run: |
           cd "$GGUF_DIR"
-          # F16 格式被原生支持，直接 create 即可，不会报错
+          # Q8_0 格式原生兼容，直接 create 即可
           ollama create "$MODEL_NAME" -f Modelfile
           ollama list
 
